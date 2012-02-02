@@ -2,14 +2,24 @@ var fs = require('fs');
 var path = require('path');
 var exists = fs.existsSync || path.existsSync;
 
+var Struct = require('./struct');
+var vendors = require('./vendors');
+var labels = require('./labels');
+
 'ArrayBuffer' in global || function(s){
   for (var k in s) global[k] = s[k];
 }(process.binding('typed_array'));
 
 
-var Struct = require('./struct');
-var vendors = require('./vendors');
-var labels = require('./labels');
+
+module.exports = {
+  listFonts: listFonts,
+  loadFont: loadFont,
+  Font: Font
+};
+
+console.log(module.exports)
+
 
 var fontFolder = ({
   win32:  '/Windows/fonts',
@@ -17,9 +27,13 @@ var fontFolder = ({
   linux: '/usr/share/fonts/truetype'
 })[process.platform];
 
+
+
 function listFonts(){
   return fs.readdirSync(fontFolder);
 }
+
+
 
 function loadFont(filename){
   var resolved = path._makeLong(path.resolve(fontFolder, filename));
@@ -29,6 +43,37 @@ function loadFont(filename){
     throw new Error(resolved + ' not found');
   }
 }
+
+
+function Font(buffer, filename){
+  this.filename = filename;
+  this.name = filename.slice(0, -path.extname(filename).length);
+  var data = this.data = buffer;
+  var index = this.index = Index(data, 0);
+  index.tableIndex = index.tableIndex.reduce(function(r,s,i){
+    r[s.tag.replace(/[\s\/]/g,'')] = index.tableIndex[i];
+    Object.defineProperty(index.tableIndex[i], 'tag', { enumerable:false });
+    return r
+  }, {});
+  var os2 = this.os2 = OS2.readStructs(data, index.tableIndex.OS2.offset);
+
+  os2.weightClass = labels.weights[os2.weightClass / 100 - 1];
+  os2.widthClass = labels.widths[os2.widthClass - 1];
+  os2.selection = bitfield(os2.selection, 16, labels.selection);
+  os2.class = Object.keys(labels.classes)[os2.class];
+  os2.subclass = labels.classes[os2.class][os2.subclass];
+  os2.panose = panose(os2.panose);
+  os2.vendorID in vendors && (os2.vendorID = vendors[os2.vendorID]);
+
+  os2.codePages = bitfield(os2.codePages, 32, labels.codePageNames);
+  os2.unicodePages = bitfield(os2.unicodePages, 32, labels.unicodeBlocks).reduce(function(r,s){
+    return r[s] = labels.unicodeRanges[s], r;
+  }, {});
+}
+
+
+lazyProperty(Font.prototype, ['data', 'filename']);
+
 
 function struct(definition){
   var fields = [];
@@ -53,6 +98,7 @@ function struct(definition){
   fields.push(descriptors);
   return Struct.create.apply(Struct, fields);
 }
+
 
 function recurse(o){
   return function(arrayBuffer, offset, count, callback){
@@ -143,32 +189,6 @@ var OS2 = struct({
   maxContext:           'uint16'
 });
 
-function Font(buffer, filename){
-  this.filename = filename;
-  this.name = filename.slice(0, -path.extname(filename).length);
-  var data = this.data = buffer;
-  var index = Index(data, 0);
-  var tables = index.tableIndex.reduce(function(r,s,i){
-    r[s.tag.replace(/[\s\/]/g,'')] = index.tableIndex[i];
-    Object.defineProperty(index.tableIndex[i], 'tag', { enumerable:false });
-    return r
-  }, {});
-  var os2 = OS2.readStructs(data, tables.OS2.offset);
-  os2.weightClass = labels.weights[os2.weightClass / 100 - 1];
-  os2.widthClass = labels.widths[os2.widthClass - 1];
-  os2.selection = bitfield(os2.selection, 16, labels.selection);
-  os2.class = Object.keys(labels.classes)[os2.class];
-  os2.subclass = labels.classes[os2.class][os2.subclass];
-  os2.panose = panose(os2.panose);
-  os2.vendorID in vendors && (os2.vendorID = vendors[os2.vendorID]);
-
-  os2.codePages = bitfield(os2.codePages, 32, labels.codePageNames);
-  os2.unicodePages = bitfield(os2.unicodePages, 32, labels.unicodeBlocks).reduce(function(r,s){
-    return r[s] = labels.unicodeRanges[s], r;
-  }, {})
-  console.log(os2);
-}
-
 
 
 
@@ -215,7 +235,6 @@ function Font(buffer, filename){
 
 
 
-lazyProperty(Font.prototype, ['_data', '_filename']);
 
 
 function bitfield(vals, size, labels){
@@ -262,15 +281,12 @@ function lazyProperty(obj, name){
     });
     return obj;
   }
-  var hidden = name[0] === '_';
-  name = hidden ? name.slice(1) : name;
+  var visible = name[0] === '$';
+  name = visible ? name.slice(1) : name;
   Object.defineProperty(obj, name, {
     configurable: true,
-    enumerable: !hidden,
+    enumerable: !visible,
     get: function(){},
     set: function(v){ Object.defineProperty(this, name, { value: v, writable: true }) }
   });
 }
-
-
-console.log(loadFont('THESANSMONO-9-BLACK.ttf'));
