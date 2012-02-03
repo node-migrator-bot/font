@@ -151,7 +151,7 @@ module.exports = global.Struct = Object.defineProperties(Struct, {
   * @param length Number of elements to read. Total bytes read will be type.byteLength * length
   */
   array: {
-    value: function(name, type, length) {
+    value: function(name, type, length, callback) {
       var code = [
         "(function(o) {",
         "  var aa = new Array(" + length + "), av;",
@@ -160,6 +160,7 @@ module.exports = global.Struct = Object.defineProperties(Struct, {
         "    o += " + type.byteLength + ";",
         "    aa[j] = av;",
         "  }",
+        "  if(st.callback) st.callback(o);",
         "  return aa",
         "})(o);"
       ].join('\n');
@@ -169,7 +170,8 @@ module.exports = global.Struct = Object.defineProperties(Struct, {
         byteLength: type.byteLength * length,
         defaultValue: null,
         array: true,
-        structProperty: true
+        structProperty: true,
+        callback: callback
       };
     }
   },
@@ -239,6 +241,7 @@ module.exports = global.Struct = Object.defineProperties(Struct, {
         readCode += "o += " + type.byteLength + ";\n";
         byteLength += type.byteLength;
       }
+      readCode += 'if(st.callback) st.callback(o);';
       readCode += "return st; })(o);";
 
       // Build the code to read an array of this struct type

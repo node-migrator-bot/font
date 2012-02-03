@@ -18,7 +18,6 @@ module.exports = {
   Font: Font
 };
 
-console.log(module.exports)
 
 
 var fontFolder = ({
@@ -71,7 +70,6 @@ function Font(buffer, filename){
   }, {});
 }
 
-
 lazyProperty(Font.prototype, ['data', 'filename']);
 
 
@@ -79,7 +77,9 @@ function struct(definition){
   var fields = [];
   var descriptors = Object.keys(definition).reduce(function(descriptors, property){
     var desc = Object.getOwnPropertyDescriptor(definition, property);
-    if (Array.isArray(desc.value)) {
+    if (desc.value instanceof StructDef) {
+      fields.push(desc.value.create(property));
+    } else if (Array.isArray(desc.value)) {
       desc = desc.value;
       var type = desc.shift();
       if (type === 'array' && typeof desc[0] === 'string') {
@@ -118,29 +118,114 @@ function recurse(o){
   }
 }
 
+function StructDef(name){
+  this.name = name;
+  StructDef[name] = this;
+}
+StructDef.prototype = {
+  constructor: StructDef
+}
+StructDef.cache = {};
+
+
+function ArrayDef(name, type, length){
+  StructDef.apply(this, arguments);
+  this.type = type;
+  this.length = length;
+}
+ArrayDef.prototype = {
+  __proto__: StructDef.prototype,
+  constructor: ArrayDef,
+  defType: 'array',
+  create: function(name){
+    return Struct.array(name || this.name, Struct[this.type](), this.length);
+  }
+};
+
+function StringDef(name, length){
+  StructDef.apply(this, arguments);
+  this.length = length;
+}
+StringDef.prototype = {
+  __proto__: StructDef.prototype,
+  constructor: StringDef,
+  defType: 'string',
+  create: function(name){
+    return Struct.string(name || this.name, this.length);
+  }
+};
+
+function BitfieldDef(name, type, length, map){
+  ArrayDef.apply(this, arguments);
+  this.map = map;
+}
+
+BitfieldDef.prototype = {
+  __proto__: ArrayDef.prototype,
+  constructor: BitfieldDef,
+  create: function(name){
+    return Struct.array(name || this.name, Struct[this.type](), this.length, this.postProcess);
+  },
+  postProcess: function(data){
+    var out = bitfield(data, this.type.byteLength, this.map);
+  }
+};
+
+
+
+var Tag = new StringDef('Tag', 4);
+var Version = new ArrayDef('Version', 'uint8', 4);
+var LongDateTime = new ArrayDef('LongDateTime', 'int32', 2);
+var Point = struct({ x: 'int16', y: 'int16' });
+var Metrics = struct({ size: Point, offset: Point });
+
 var TableIndex = struct({
-  tag:      ['string', 4],
+  tag:      Tag,
   checksum: 'uint32',
   offset:   'uint32',
   length:   'uint32'
 });
 
+var FontIndex = struct({
+  version:  Version,
+  tables:   'uint16',
+  range:    'uint16',
+  selector: 'uint16',
+  shift:    'uint16',
+  get type(){
+    var vers = this.version.join('');
+    return vers === '0100' ? 'TrueType' : vers === 'OTTO' ? 'OpenType' : 'Unknown';
+  }
+});
+
+
 var Index = recurse({
-  source: struct({
-    version:  ['array', 'uint8', 4],
-    tables:   'uint16',
-    range:    'uint16',
-    selector: 'uint16',
-    shift:    'uint16',
-    get type(){
-      var vers = this.version.join('');
-      return vers === '0100' ? 'TrueType' : vers === 'OTTO' ? 'OpenType' : 'Unknown';
-    }
-  }),
+  source: FontIndex,
   target: TableIndex,
   name: 'tableIndex',
   count: 'tables'
 });
+
+
+
+var Head = struct({
+  version: Version,
+  fontRevision: 'int32' ,
+  checkSumAdjustment: 'uint32',
+  magicNumber: 'uint32',
+  flags: 'uint16',
+  unitsPerEm: 'uint16',
+  created: LongDateTime ,
+  modified: LongDateTime ,
+  min: Point,
+  max: Point,
+  macStyle: 'uint16',
+  lowestRecPPEM: 'uint16',
+  fontDirectionHint : 'int16',
+  indexToLocFormat: 'int16',
+  glyphDataFormat: 'int16',
+});
+
 
 var NameIndex = struct({
   format: 'uint16',
@@ -159,8 +244,6 @@ var NameRecord = struct({
 });
 
 
-var Point = struct({ x: 'int16', y: 'int16' });
-var Metrics = struct({ size: Point, offset: Point });
 
 var OS2 = struct({
   version:              'uint16',
@@ -173,9 +256,9 @@ var OS2 = struct({
   strikeout:            struct({ size: 'int16', position: 'int16' }),
   class:                'int8',
   subclass:             'int8',
-  panose:              ['array', 'uint8', 10],
-  unicodePages:        ['array', 'uint32', 4],
-  vendorID:            ['string', 4],
+  panose:               ['array', 'uint8', 10],
+  unicodePages:         new BitfieldDef('unicodePages', 'uint32', 4, labels.unicodeRanges),
+  vendorID:             Tag,
   selection:            'uint16',
   firstCharIndex:       'uint16',
   lastCharIndex:        'uint16',
@@ -290,3 +373,9 @@ function lazyProperty(obj, name){
     set: function(v){ Object.defineProperty(this, name, { value: v, writable: true }) }
   });
 }
+
+//'THESANSMONO-9-BLACK'
+//
+
+
+//console.log(loadFont('THESANSMONO-9-BLACK.ttf'));

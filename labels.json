@@ -85,6 +85,20 @@
     "Zapf": "glyph referenc"
   },
 
+  "head": {
+    "flags": [ "Baseline at y=0",
+               "Sidebearing at x=0",
+               "Instructions may depend on point size",
+               "Force ppem to integer values",
+               "Advance widths might not scale linearly",
+               0,0,0,0,0,0,
+               "Font data is lossless",
+               "Font converted",
+               "Font optimized for ClearType™",
+               "Last Resort font",
+               "Reserved" ]
+  },
+
   "selection": [ "italic", "underscore", "negative", "outlined", "strikeout ",
                  "bold", "regular", "use_typo_metrics", "wws", "oblique"] ,
 
