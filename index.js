@@ -6,11 +6,8 @@ var vendors = require('./vendors');
 var labels = require('./labels');
 
 
-
 module.exports = Font;
 
-// There's essentially type styles of usage. One which is more declarative like this
-// One where everything uses the `reified` function magic. It's mostly a matter of style.
 
 var reified   = require('reified'),
     BitfieldT = reified.BitfieldType,
@@ -34,9 +31,6 @@ var reified   = require('reified'),
 reified.defaultEndian = 'BE';
 
 var flatten = Function.apply.bind([].concat, []);
-function inspect(o){ console.log(require('util').inspect(o, false, 6)) }
-
-
 
 function Font(buffer, filename){
   this.filename = filename;
@@ -56,7 +50,6 @@ function Font(buffer, filename){
     }
   });
 
-  inspect(this.reify());
 }
 
 // convenience function to automatically reify any structs put onto the container
@@ -257,6 +250,3 @@ var NameRecord = StructT('NameRecord', {
   length     : Uint16,
   contents   : Uint16,
 });
-
-//console.log(Font.listFonts());
-Font.load('DejaVuSansMono.ttf');
