@@ -2,40 +2,82 @@ var fs = require('fs');
 var path = require('path');
 var exists = fs.existsSync || path.existsSync;
 
-var Struct = require('./struct');
 var vendors = require('./vendors');
 var labels = require('./labels');
 
-'ArrayBuffer' in global || function(s){
-  for (var k in s) global[k] = s[k];
-}(process.binding('typed_array'));
+
+
+module.exports = Font;
+
+// There's essentially type styles of usage. One which is more declarative like this
+// One where everything uses the `reified` function magic. It's mostly a matter of style.
+
+var reified   = require('reified'),
+    BitfieldT = reified.BitfieldType,
+    StructT   = reified.StructType,
+    ArrayT    = reified.ArrayType,
+    CharT     = reified.CharType,
+    PointerT  = reified.PointerType,
+    NumT      = reified.NumericType,
+    Int8      = NumT.Int8,
+    Int16     = NumT.Int16,
+    Int32     = NumT.Int32,
+    Int64     = NumT.Int64,
+    Uint8     = NumT.Uint8,
+    Uint16    = NumT.Uint16,
+    Uint32    = NumT.Uint32,
+    Uint64    = NumT.Uint64,
+    Float32   = NumT.Float32,
+    Float64   = NumT.Float64;
+
+
+reified.defaultEndian = 'BE';
+
+var flatten = Function.apply.bind([].concat, []);
+function inspect(o){ console.log(require('util').inspect(o, false, 6)) }
 
 
 
-module.exports = {
-  listFonts: listFonts,
-  loadFont: loadFont,
-  Font: Font
-};
+function Font(buffer, filename){
+  this.filename = filename;
+  this.name = filename.slice(0, -path.extname(filename).length);
 
+  // FontIndex is the entry point
+  this.index = new FontIndex(buffer);
 
+  // initialize tables using table count from the index
+  this.tables = new TableHead[this.index.tableCount](buffer, this.index.bytes);
 
-var fontFolder = ({
-  win32:  '/Windows/fonts',
-  darwin: '/Library/Fonts',
-  linux: '/usr/share/fonts/truetype'
-})[process.platform];
+  // loop through the tables casting the pointer to the correct struct type based on tag
+  this.tables.forEach(function(table){
+    var tag = table.tag.reify();
+    if (tag in TableTypes) {
+      table.contents.cast(TableTypes[tag]);
+    }
+  });
 
+  inspect(this.reify());
+}
 
-
-function listFonts(){
-  return fs.readdirSync(fontFolder);
+// convenience function to automatically reify any structs put onto the container
+Font.prototype.reify = function reify(){
+  return Object.keys(this).reduce(function(r,s){
+    r[s] = this[s].reify ? this[s].reify() : this[s];
+    return r;
+  }.bind(this), {});
 }
 
 
+Font.fontFolder = ({
+  win32:  '/Windows/fonts',
+  darwin: '/Library/Fonts',
+  linux:  '/usr/share/fonts/truetype'
+}[process.platform]);
 
-function loadFont(filename){
-  var resolved = path._makeLong(path.resolve(fontFolder, filename));
+Font.listFonts = function listFonts(){ return fs.readdirSync(Font.fontFolder) }
+
+Font.load = function load(filename){
+  var resolved = path._makeLong(path.resolve(Font.fontFolder, filename));
   if (exists(resolved)) {
     return new Font(fs.readFileSync(resolved), filename);
   } else {
@@ -44,338 +86,177 @@ function loadFont(filename){
 }
 
 
-function Font(buffer, filename){
-  this.filename = filename;
-  this.name = filename.slice(0, -path.extname(filename).length);
-  var data = this.data = buffer;
-  var index = this.index = Index(data, 0);
-  index.tableIndex = index.tableIndex.reduce(function(r,s,i){
-    r[s.tag.replace(/[\s\/]/g,'')] = index.tableIndex[i];
-    Object.defineProperty(index.tableIndex[i], 'tag', { enumerable:false });
-    return r
-  }, {});
-  var os2 = this.os2 = OS2.readStructs(data, index.tableIndex.OS2.offset);
 
-  os2.weightClass = labels.weights[os2.weightClass / 100 - 1];
-  os2.widthClass = labels.widths[os2.widthClass - 1];
-  os2.selection = bitfield(os2.selection, 16, labels.selection);
-  os2.class = Object.keys(labels.classes)[os2.class];
-  os2.subclass = labels.classes[os2.class][os2.subclass];
-  os2.panose = panose(os2.panose);
-  os2.vendorID in vendors && (os2.vendorID = vendors[os2.vendorID]);
+// ###########################
+// ### Commonly used Types ###
+// ###########################
 
-  os2.codePages = bitfield(os2.codePages, 32, labels.codePageNames);
-  os2.unicodePages = bitfield(os2.unicodePages, 32, labels.unicodeBlocks).reduce(function(r,s){
-    return r[s] = labels.unicodeRanges[s], r;
-  }, {});
-}
-
-lazyProperty(Font.prototype, ['data', 'filename']);
-
-
-function struct(definition){
-  var fields = [];
-  var descriptors = Object.keys(definition).reduce(function(descriptors, property){
-    var desc = Object.getOwnPropertyDescriptor(definition, property);
-    if (desc.value instanceof StructDef) {
-      fields.push(desc.value.create(property));
-    } else if (Array.isArray(desc.value)) {
-      desc = desc.value;
-      var type = desc.shift();
-      if (type === 'array' && typeof desc[0] === 'string') {
-        desc[0] = Struct[desc[0]]();
-      }
-      fields.push(Struct[type].apply(Struct, [property].concat(desc)));
-    } else if (typeof desc.value === 'string') {
-      fields.push(Struct[desc.value](property));
-    } else if (desc.value && desc.value.isStruct) {
-      fields.push(Struct.struct.apply(Struct, [property].concat(desc.value)));
-    } else {
-      descriptors[property] = desc;
-    }
-    return descriptors;
-  }, {});
-  fields.push(descriptors);
-  return Struct.create.apply(Struct, fields);
-}
-
-
-function recurse(o){
-  return function(arrayBuffer, offset, count, callback){
-    return o.source.readStructs(arrayBuffer, offset, count, function(value, offset){
-      if (o.count) {
-        count = value[o.count];
-      }
-      offset += value.byteLength;
-      if (o.pointer) {
-        offset = value[o.pointer];
-      } else if (o.offset) {
-        offset += value[o.offset];
-      }
-      value[o.name] = o.target.readStructs(arrayBuffer, offset, count, callback);
-      //value.byteLength += o.target.byteLength * count;
-    });
-  }
-}
-
-function StructDef(name){
-  this.name = name;
-  StructDef[name] = this;
-}
-StructDef.prototype = {
-  constructor: StructDef
-}
-StructDef.cache = {};
-
-
-function ArrayDef(name, type, length){
-  StructDef.apply(this, arguments);
-  this.type = type;
-  this.length = length;
-}
-ArrayDef.prototype = {
-  __proto__: StructDef.prototype,
-  constructor: ArrayDef,
-  defType: 'array',
-  create: function(name){
-    return Struct.array(name || this.name, Struct[this.type](), this.length);
-  }
-};
-
-function StringDef(name, length){
-  StructDef.apply(this, arguments);
-  this.length = length;
-}
-StringDef.prototype = {
-  __proto__: StructDef.prototype,
-  constructor: StringDef,
-  defType: 'string',
-  create: function(name){
-    return Struct.string(name || this.name, this.length);
-  }
-};
-
-function BitfieldDef(name, type, length, map){
-  ArrayDef.apply(this, arguments);
-  this.map = map;
-}
-
-BitfieldDef.prototype = {
-  __proto__: ArrayDef.prototype,
-  constructor: BitfieldDef,
-  create: function(name){
-    return Struct.array(name || this.name, Struct[this.type](), this.length, this.postProcess);
-  },
-  postProcess: function(data){
-    var out = bitfield(data, this.type.byteLength, this.map);
-  }
-};
-
-
-
-var Tag = new StringDef('Tag', 4);
-var Version = new ArrayDef('Version', 'uint8', 4);
-var LongDateTime = new ArrayDef('LongDateTime', 'int32', 2);
-var Point = struct({ x: 'int16', y: 'int16' });
-var Metrics = struct({ size: Point, offset: Point });
-
-var TableIndex = struct({
-  tag:      Tag,
-  checksum: 'uint32',
-  offset:   'uint32',
-  length:   'uint32'
+var Point = StructT('Point', {
+  x: Int16,
+  y: Int16
 });
 
-var FontIndex = struct({
-  version:  Version,
-  tables:   'uint16',
-  range:    'uint16',
-  selector: 'uint16',
-  shift:    'uint16',
-  get type(){
-    var vers = this.version.join('');
-    return vers === '0100' ? 'TrueType' : vers === 'OTTO' ? 'OpenType' : 'Unknown';
-  }
+var Dimensions = StructT('Dimensions', {
+  width: Int16,
+  height: Int16
+});
+
+var Metrics = StructT('Metrics', {
+  size: Dimensions,
+  position: Point
+});
+
+var LongDateTime = reified('Uint64').typeDef('LongDateTime', function(reify){
+  return new Date((reify()[1] - 2082844800) * 1000);
+});
+
+var Tag = CharT(4).typeDef('Tag');
+
+var Version = ArrayT('Version', Uint8, 4).reifier(function(reify){
+  return this.join('');
+});
+
+// ###############################################################################
+// ### FontIndex starts the file and tells the number of Tables in the Index  ####
+// ###############################################################################
+
+var TTFVersion = Uint8[4].typeDef('TTFVersion', function(reify){
+  var val = this.join('');
+  return val === '0100' ? 'TrueType' : val === 'OTTO' ? 'OpenType' : 'Unknown';
+});
+
+var FontIndex = new StructT('FontIndex', {
+  version    : TTFVersion,
+  tableCount : Uint16,
+  range      : Uint16,
+  selector   : Uint16,
+  shift      : Uint16
+});
+
+FontIndex.version
+
+// ######################################################################
+// ### After the FontIndex are TableHeads with pointers to each table ###
+// ######################################################################
+
+var TableHead = StructT('Table', {
+  tag      : Tag,
+  checksum : Uint32,
+  contents : reified.VoidPtr,
+  length   : Uint32
+});
+
+var TableTypes = {};
+
+
+// ##################################################################
+// ### Head contains general font metrics and important constants ###
+// ##################################################################
+
+TableTypes.head = StructT('Head', {
+  version          : Version,
+  fontRevision     : Int32 ,
+  checkSumAdj      : Uint32,
+  magicNumber      : Uint32,
+  flags            : Uint16,
+  unitsPerEm       : Uint16,
+  created          : LongDateTime,
+  modified         : LongDateTime,
+  min              : Point,
+  max              : Point,
+  macStyle         : Uint16,
+  lowestRecPPEM    : Uint16,
+  fontDirHint      : Int16,
+  indexToLocFormat : Int16,
+  glyphDataFormat  : Int16,
 });
 
 
-var Index = recurse({
-  source: FontIndex,
-  target: TableIndex,
-  name: 'tableIndex',
-  count: 'tables'
+// ##################################################################################
+// ### OS2 is the 'compatability' table containing a lot of useful stats and info ###
+// ##################################################################################
+
+// ### PANOSE is a set of 10 bitfields whose mapping is in labels.json ###
+Object.keys(labels.panose).forEach(function(label){
+  labels.panose[label] = BitfieldT(label, labels.panose[label], 1);
 });
 
+// ### Unicode pages are 4 bitfields mapping to blocks which map to ranges, labels.json ###
+var UnicodePages = StructT('UnicodePages', labels.unicodeBlocks.reduce(function(ret, blocks, index){
+  // custome reify function for mapping the code pages to their names, then flattening all the arrays
 
+  ret[index] = BitfieldT('UnicodePages'+index, blocks, 4);
 
-var Head = struct({
-  version: Version,
-  fontRevision: 'int32' ,
-  checkSumAdjustment: 'uint32',
-  magicNumber: 'uint32',
-  flags: 'uint16',
-  unitsPerEm: 'uint16',
-  created: LongDateTime ,
-  modified: LongDateTime ,
-  min: Point,
-  max: Point,
-  macStyle: 'uint16',
-  lowestRecPPEM: 'uint16',
-  fontDirectionHint : 'int16',
-  indexToLocFormat: 'int16',
-  glyphDataFormat: 'int16',
-});
-
-
-var NameIndex = struct({
-  format: 'uint16',
-  length: 'uint16',
-  offset: 'uint16'
-});
-
-var NameRecord = struct({
-  platformID: 'uint16',
-  encodingID: 'uint16',
-  languageID: 'uint16',
-  nameID:     'uint16',
-  length:     'uint16',
-  offset:     'uint16',
-  get name(){ return labels.nameIDs[this.nameID] }
-});
-
-
-
-var OS2 = struct({
-  version:              'uint16',
-  avgCharWidth:         'int16',
-  weightClass:          'uint16',
-  widthClass:           'uint16',
-  type:                 'uint16',
-  subscript:             Metrics,
-  superscript:           Metrics,
-  strikeout:            struct({ size: 'int16', position: 'int16' }),
-  class:                'int8',
-  subclass:             'int8',
-  panose:               ['array', 'uint8', 10],
-  unicodePages:         new BitfieldDef('unicodePages', 'uint32', 4, labels.unicodeRanges),
-  vendorID:             Tag,
-  selection:            'uint16',
-  firstCharIndex:       'uint16',
-  lastCharIndex:        'uint16',
-  typographic:          struct({ ascender: 'int16', descender: 'int16', lineGap: 'int16' }),
-  windowTypographic:    struct({ ascender: 'uint16', descender: 'uint16' }),
-  codePages:           ['array', 'uint32', 2],
-  xHeight:              'int16',
-  capHeight:            'int16',
-  defaultChar:          'uint16',
-  breakChar:            'uint16',
-  maxContext:           'uint16'
-});
-
-
-
-
-// data.seek(tags.head.offset);
-// tags.head.version = data.version;
-// data.move(14);
-// var unitsPerEm = this.unitsPerEm = data.ushort();
-
-// data.seek(tags.hhea.offset);
-// tags.hhea.version = data.version;
-// this.ascent  = data.fword() / unitsPerEm;
-// this.descent = data.fword() / unitsPerEm;
-// this.leading = data.fword() / unitsPerEm;
-
-// tags.name || tagMissing('name');
-// data.seek(tags.name.offset);
-// var format = data.ushort();
-// var namecount = data.ushort();
-// var store = data.ushort();
-// if (format === 0) {
-//   var nameRecords = [];
-//   while (namecount--) {
-//     nameRecords.push({
-//       platformID: data.ushort(),
-//       encodingID: data.ushort(),
-//       languageID: data.ushort(),
-//       nameID: data.ushort(),
-//       length: data.ushort(),
-//       offset: data.ushort(),
-//     });
-//   }
-//   this.names = nameRecords.reduce(function(ret, record, i){
-//     var name = labels.nameIDs[record.nameID];
-//     var val = data.string(record.length).replace(/\u0000/g, '');
-//     if (name in ret && ret[name] !== val) {
-//       ret[name] = [ ret[name], val ];
-//     } else {
-//       ret[name] = val;
-//     }
-//     return ret;
-//       //platform: labels.platformIDs[record.platformID]
-//   }, {});
-// }
-
-
-
-
-
-function bitfield(vals, size, labels){
-  if (Array.isArray(vals)){
-    return flatten(vals.map(function(val,i){
-      return bitfield(val, size, labels[i]);
+  ret[index].reifier(function(reify){
+    return flatten(reify().map(function(s){
+      return s.split(',').map(function(ss){
+        return labels.unicodeRanges[ss];
+      });
     }));
-  }
-  var out = [];
-  for (var i=0; i < size; i++){
-    if (!!(vals & 1 << i)) {
-      out.push(labels[i]);
-    }
-  }
-  return out;
-}
-
-function flatten(array){
-  return array.reduce(function(r, v){
-    if (Array.isArray(v)) {
-      return r.concat(flatten(v));
-    }
-    r[r.length] = v;
-    return r;
-  }, []);
-}
-
-function panose(data){
-  return Object.keys(labels.panose).reduce(function(r,s,i){
-    if (data[i] > 1) {
-      r[s] = labels.panose[s][data[i] - 2];
-    }
-    return r;
-  }, {});
-}
-
-
-
-
-function lazyProperty(obj, name){
-  if (Array.isArray(name)) {
-    name.forEach(function(prop){
-      lazyProperty(obj, prop);
-    });
-    return obj;
-  }
-  var visible = name[0] === '$';
-  name = visible ? name.slice(1) : name;
-  Object.defineProperty(obj, name, {
-    configurable: true,
-    enumerable: !visible,
-    get: function(){},
-    set: function(v){ Object.defineProperty(this, name, { value: v, writable: true }) }
   });
-}
 
-//'THESANSMONO-9-BLACK'
-//
+  return ret;
+}, {}));
+
+UnicodePages.reifier(function(reify){
+  // flattens all the pages into a single array
+  var ret = reify();
+  return Object.keys(ret).reduce(function(r,s){
+    return r.concat(ret[s]);
+  }, []).sort();
+});
+
+TableTypes['OS/2'] = StructT('OS2', {
+  version      : Uint16,
+  avgCharWidth : Int16,
+  weightClass  : Uint16.typeDef('WeightClass', function(){ return labels.weights[this / 100 - 1] }),
+  widthClass   : Uint16.typeDef('WidthClass', function(){ return labels.widths[this - 1] }),
+  typer        : Uint16,
+  subscript    : Metrics,
+  superscript  : Metrics,
+  strikeout    : StructT('Strikeout',
+  { size         : Int16,
+    position     : Int16 }),
+  class        : Int8[2],
+  panose       : StructT('PANOSE', labels.panose),
+  unicodePages : UnicodePages,
+  vendorID     : Tag,
+  selection    : Uint16,
+  firstChar    : Uint16,
+  lastChar     : Uint16,
+  typographic  : StructT('Typographic',
+  { ascender     : Int16,
+    descender    : Int16,
+    lineGap      : Int16 }),
+  winTypograph : StructT('WindowsTypographic',
+  { ascender     : Uint16,
+    descender    : Uint16 }),
+  codePages1   : BitfieldT('CodePages1', labels.codePageNames[0], 4),
+  codePages2   : BitfieldT('CodePages2', labels.codePageNames[1], 4),
+  xHeight      : Int16,
+  capHeight    : Int16,
+  defaultChar  : Uint16,
+  breakChar    : Uint16,
+  maxContext   : Uint16
+});
 
 
-//console.log(loadFont('THESANSMONO-9-BLACK.ttf'));
+
+
+var NameIndex = StructT('NameIndex', {
+  format     : Uint16,
+  length     : Uint16,
+  contents   : Uint16
+});
+
+var NameRecord = StructT('NameRecord', {
+  platformID : Uint16,
+  encodingID : Uint16,
+  languageID : Uint16,
+  nameID     : Uint16,
+  length     : Uint16,
+  contents   : Uint16,
+});
+
+//console.log(Font.listFonts());
+Font.load('DejaVuSansMono.ttf');

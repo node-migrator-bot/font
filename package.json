@@ -2,7 +2,7 @@
   "author": "Brandon Benvie <brandon@bbenvie.com> (http://bbenvie.com)",
   "name": "font",
   "description": "Read font file data in javascript using buffers.",
-  "version": "0.0.1",
+  "version": "0.0.2",
   "repository": {
     "type": "git",
     "url": "git://github.com/Benvie/font.git"
@@ -11,7 +11,9 @@
   "engines": {
     "node": "0.6"
   },
-  "dependencies": {},
+  "dependencies": {
+    "reified": "~0.2.4"
+  },
   "devDependencies": {},
   "optionalDependencies": {}
 }
