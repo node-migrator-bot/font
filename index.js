@@ -6,8 +6,11 @@ var vendors = require('./vendors');
 var labels = require('./labels');
 
 
+
 module.exports = Font;
 
+// There's essentially type styles of usage. One which is more declarative like this
+// One where everything uses the `reified` function magic. It's mostly a matter of style.
 
 var reified   = require('reified'),
     BitfieldT = reified.BitfieldType,
@@ -31,6 +34,14 @@ var reified   = require('reified'),
 reified.defaultEndian = 'BE';
 
 var flatten = Function.apply.bind([].concat, []);
+function inspect(o){ console.log(require('util').inspect(o, false, 6)) }
+function flattener(reify){
+  var ret = reify();
+  return Object.keys(ret).reduce(function(r,s){
+    return r.concat(ret[s]);
+  }, []).sort();
+}
+
 
 function Font(buffer, filename){
   this.filename = filename;
@@ -49,7 +60,6 @@ function Font(buffer, filename){
       table.contents.cast(TableTypes[tag]);
     }
   });
-
 }
 
 // convenience function to automatically reify any structs put onto the container
@@ -61,7 +71,7 @@ Font.prototype.reify = function reify(){
 }
 
 
-Font.fontFolder = ({
+Font.fontFolder = path.resolve({
   win32:  '/Windows/fonts',
   darwin: '/Library/Fonts',
   linux:  '/usr/share/fonts/truetype'
@@ -178,9 +188,7 @@ Object.keys(labels.panose).forEach(function(label){
 var UnicodePages = StructT('UnicodePages', labels.unicodeBlocks.reduce(function(ret, blocks, index){
   // custome reify function for mapping the code pages to their names, then flattening all the arrays
 
-  ret[index] = BitfieldT('UnicodePages'+index, blocks, 4);
-
-  ret[index].reifier(function(reify){
+  ret[index] = BitfieldT('UnicodePages'+index, blocks, 4).reifier(function(reify){
     return flatten(reify().map(function(s){
       return s.split(',').map(function(ss){
         return labels.unicodeRanges[ss];
@@ -189,15 +197,9 @@ var UnicodePages = StructT('UnicodePages', labels.unicodeBlocks.reduce(function(
   });
 
   return ret;
-}, {}));
+}, {})).reifier(flattener);
 
-UnicodePages.reifier(function(reify){
-  // flattens all the pages into a single array
-  var ret = reify();
-  return Object.keys(ret).reduce(function(r,s){
-    return r.concat(ret[s]);
-  }, []).sort();
-});
+
 
 TableTypes['OS/2'] = StructT('OS2', {
   version      : Uint16,
@@ -224,8 +226,9 @@ TableTypes['OS/2'] = StructT('OS2', {
   winTypograph : StructT('WindowsTypographic',
   { ascender     : Uint16,
     descender    : Uint16 }),
-  codePages1   : BitfieldT('CodePages1', labels.codePageNames[0], 4),
-  codePages2   : BitfieldT('CodePages2', labels.codePageNames[1], 4),
+  codePages    : StructT('CodePages', {
+    1            : BitfieldT('CodePages1', labels.codePageNames[0], 4),
+    2            : BitfieldT('CodePages2', labels.codePageNames[1], 4) }).reifier(flattener),
   xHeight      : Int16,
   capHeight    : Int16,
   defaultChar  : Uint16,
