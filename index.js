@@ -1,6 +1,6 @@
 var fs = require('fs');
 var path = require('path');
-var exists = fs.existsSync || path.existsSync;
+var exists = fs.existsSync || fs.existsSync;
 
 var vendors = require('./vendors');
 var labels = require('./labels');
